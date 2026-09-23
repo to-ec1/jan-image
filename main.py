@@ -38,10 +38,15 @@ creds = Credentials(
     scopes=SCOPES
 )
 
+print("OAuth開始")
 creds.refresh(Request())
+print("OAuth完了")
 
+print("Sheets初期化")
 sheets = build("sheets", "v4", credentials=creds)
+print("Drive初期化")
 drive = build("drive", "v3", credentials=creds)
+print("初期化完了")
 
 # -----------------------------
 # Spreadsheet取得
