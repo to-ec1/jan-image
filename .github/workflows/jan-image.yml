@@ -2,11 +2,6 @@ name: JAN Product Image Search
 
 on:
   workflow_dispatch:
-    inputs:
-      jan:
-        description: "JANコード"
-        required: true
-        default: "4571414692199"
 
 jobs:
   search:
@@ -18,204 +13,233 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install DuckDuckGo OSS
+      - name: Install packages
         run: |
-          pip install ddg-rs
+          pip install ddg-rs google-api-python-client google-auth google-auth-httplib2 Pillow
 
-      - name: Search JAN and download product image
-        env:
-          JAN: ${{ inputs.jan }}
+      - name: Create program
         run: |
           cat > jan_image_search.py <<'PY'
-          from ddg import Browser
-          import urllib.request
-          import urllib.parse
+          import io
+          import json
           import os
-          import re
+          import urllib.parse
+          import urllib.request
 
-          jan = os.environ["JAN"]
+          from ddg import Browser
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaIoBaseUpload
+          from PIL import Image
 
-          browser = Browser()
+          SPREADSHEET_ID = "10FjKOIikwAGecJYUvNiJQuk_5FmpUoCRim-bKnZrbpI"
+          DRIVE_FOLDER_ID = "1A1Rd04CAw07I4G14fnjsXQjS9KXw8heb"
+          SCOPES = [
+              "https://www.googleapis.com/auth/spreadsheets",
+              "https://www.googleapis.com/auth/drive"
+          ]
 
-          print(f"JAN: {jan}")
-          print("商品画像を検索しています...")
+          def get_services():
+              raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+              if not raw:
+                  raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON が設定されていません")
 
-          images = browser.images(
-              query=jan,
-              region="jp-jp",
-              safesearch=True,
-              limit=50
-          )
-
-          if not images:
-              raise RuntimeError("画像検索結果がありません")
-
-          # 優先順位
-          priorities = {
-              "rakuten.co.jp": 1,
-              "r10s.jp": 1,
-              "yahoo.co.jp": 2,
-              "yimg.jp": 2,
-              "amazon.co.jp": 3,
-              "amazon.jp": 3,
-              "yodobashi.com": 4,
-          }
+              info = json.loads(raw)
+              credentials = service_account.Credentials.from_service_account_info(
+                  info,
+                  scopes=SCOPES
+              )
+              sheets = build("sheets", "v4", credentials=credentials)
+              drive = build("drive", "v3", credentials=credentials)
+              return sheets, drive
 
           def get_priority(img):
-              urls = [
-                  getattr(img, "image", ""),
-                  getattr(img, "url", "")
-              ]
+              priorities = {
+                  "rakuten.co.jp": 1,
+                  "r10s.jp": 1,
+                  "yahoo.co.jp": 2,
+                  "yimg.jp": 2,
+                  "amazon.co.jp": 3,
+                  "amazon.jp": 3,
+                  "yodobashi.com": 4,
+              }
 
-              for url in urls:
+              for url in [getattr(img, "url", ""), getattr(img, "image", "")]:
                   try:
                       host = urllib.parse.urlparse(url).netloc.lower()
-
                       for domain, priority in priorities.items():
                           if domain in host:
                               return priority
-
                   except Exception:
                       pass
 
-              # メーカーサイト・その他
               return 5
 
-          # 優先順位 → 画像サイズの大きい順
-          candidates = sorted(
-              images,
-              key=lambda img: (
-                  get_priority(img),
-                  -(getattr(img, "width", 0) or 0) *
-                  -(getattr(img, "height", 0) or 0)
-              )
-          )
-
-          os.makedirs("output", exist_ok=True)
-
-          selected = None
-
-          for i, img in enumerate(candidates, 1):
-
-              image_url = getattr(img, "image", "")
-              page_url = getattr(img, "url", "")
-              title = getattr(img, "title", "")
-
-              if not image_url:
-                  continue
-
-              priority = get_priority(img)
-
-              print("")
-              print(f"候補 {i}")
-              print(f"優先順位: {priority}")
-              print(f"タイトル: {title}")
-              print(f"画像URL: {image_url}")
-              print(f"元ページ: {page_url}")
-
-              try:
-                  request = urllib.request.Request(
-                      image_url,
-                      headers={
-                          "User-Agent":
+          def download_image(image_url):
+              request = urllib.request.Request(
+                  image_url,
+                  headers={
+                      "User-Agent": (
                           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 Chrome/131 Safari/537.36"
-                      }
-                  )
-
-                  with urllib.request.urlopen(
-                      request,
-                      timeout=20
-                  ) as response:
-
-                      data = response.read()
-
-                      content_type = response.headers.get(
-                          "Content-Type",
-                          ""
-                      ).lower()
-
-                  if not data:
-                      continue
-
-                  # 画像以外を除外
-                  if not content_type.startswith("image/"):
-                      print("画像ではないためスキップ")
-                      continue
-
-                  # 極端に小さいファイルを除外
-                  if len(data) < 5000:
-                      print("ファイルサイズが小さいためスキップ")
-                      continue
-
-                  # 拡張子
-                  if "png" in content_type:
-                      ext = "png"
-                  elif "webp" in content_type:
-                      ext = "webp"
-                  elif "gif" in content_type:
-                      ext = "gif"
-                  else:
-                      ext = "jpg"
-
-                  filename = f"product.{ext}"
-
-                  with open(
-                      f"output/{filename}",
-                      "wb"
-                  ) as f:
-                      f.write(data)
-
-                  selected = {
-                      "jan": jan,
-                      "priority": priority,
-                      "title": title,
-                      "image_url": image_url,
-                      "page_url": page_url,
-                      "content_type": content_type,
-                      "size": len(data),
-                      "filename": filename
+                      )
                   }
-
-                  print("")
-                  print("================================")
-                  print("画像取得成功")
-                  print("================================")
-                  print(selected)
-
-                  break
-
-              except Exception as e:
-                  print(f"ダウンロード失敗: {e}")
-                  continue
-
-          if selected is None:
-              raise RuntimeError(
-                  "画像を1枚もダウンロードできませんでした"
               )
 
-          with open(
-              "output/result.txt",
-              "w",
-              encoding="utf-8"
-          ) as f:
-              for key, value in selected.items():
-                  f.write(f"{key}: {value}\n")
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  data = response.read()
+                  content_type = response.headers.get("Content-Type", "").lower()
 
+              if not data:
+                  raise RuntimeError("空の画像です")
+              if not content_type.startswith("image/"):
+                  raise RuntimeError(f"画像ではありません: {content_type}")
+              if len(data) < 5000:
+                  raise RuntimeError("画像サイズが小さすぎます")
+
+              with Image.open(io.BytesIO(data)) as img:
+                  img = img.convert("RGB")
+                  output = io.BytesIO()
+                  img.save(output, format="JPEG", quality=95)
+                  return output.getvalue(), img.width, img.height
+
+          def upload_to_drive(drive, data, filename):
+              metadata = {
+                  "name": filename,
+                  "parents": [DRIVE_FOLDER_ID]
+              }
+              media = MediaIoBaseUpload(
+                  io.BytesIO(data),
+                  mimetype="image/jpeg",
+                  resumable=False
+              )
+              result = drive.files().create(
+                  body=metadata,
+                  media_body=media,
+                  fields="id,name"
+              ).execute()
+              return result["id"]
+
+          def update_sheet(sheets, row, image_ids):
+              values = [image_ids + [""] * (3 - len(image_ids))]
+              sheets.spreadsheets().values().update(
+                  spreadsheetId=SPREADSHEET_ID,
+                  range=f"D{row}:F{row}",
+                  valueInputOption="RAW",
+                  body={"values": values}
+              ).execute()
+
+          def main():
+              sheets, drive = get_services()
+
+              result = sheets.spreadsheets().values().get(
+                  spreadsheetId=SPREADSHEET_ID,
+                  range="A:F"
+              ).execute()
+              rows = result.get("values", [])
+
+              browser = Browser()
+
+              for row_number, row in enumerate(rows, start=1):
+                  row = row + [""] * (6 - len(row))
+
+                  jan1 = str(row[1]).strip()
+                  jan2 = str(row[2]).strip()
+                  image1 = str(row[3]).strip()
+                  image2 = str(row[4]).strip()
+                  image3 = str(row[5]).strip()
+
+                  if not jan1 and not jan2:
+                      continue
+
+                  if image1 or image2 or image3:
+                      continue
+
+                  jan = jan1 if jan1 else jan2
+
+                  print("")
+                  print("========================================")
+                  print(f"行: {row_number}")
+                  print(f"JAN: {jan}")
+                  print("========================================")
+
+                  try:
+                      images = browser.images(
+                          query=jan,
+                          region="jp-jp",
+                          safesearch=True,
+                          limit=50
+                      )
+
+                      if not images:
+                          print("画像検索結果なし → スキップ")
+                          continue
+
+                      candidates = sorted(
+                          images,
+                          key=lambda img: (
+                              get_priority(img),
+                              -((getattr(img, "width", 0) or 0) *
+                                (getattr(img, "height", 0) or 0))
+                          )
+                      )
+
+                      unique = []
+                      seen = set()
+                      for img in candidates:
+                          image_url = getattr(img, "image", "")
+                          if not image_url or image_url in seen:
+                              continue
+                          seen.add(image_url)
+                          unique.append(img)
+
+                      image_ids = []
+
+                      for img in unique:
+                          if len(image_ids) >= 3:
+                              break
+
+                          image_url = getattr(img, "image", "")
+                          page_url = getattr(img, "url", "")
+                          title = getattr(img, "title", "")
+                          priority = get_priority(img)
+
+                          print("")
+                          print(f"候補: 優先順位={priority}")
+                          print(f"タイトル: {title}")
+                          print(f"画像URL: {image_url}")
+                          print(f"元ページ: {page_url}")
+
+                          try:
+                              data, width, height = download_image(image_url)
+                              number = len(image_ids) + 1
+                              filename = f"{jan}_{number:02d}.jpg"
+                              file_id = upload_to_drive(drive, data, filename)
+                              image_ids.append(file_id)
+
+                              print(f"取得成功: {filename}")
+                              print(f"サイズ: {width}x{height}")
+                              print(f"Drive ID: {file_id}")
+
+                          except Exception as e:
+                              print(f"取得失敗 → 次の候補へ: {e}")
+
+                      if not image_ids:
+                          print("画像0枚 → スキップ")
+                          continue
+
+                      update_sheet(sheets, row_number, image_ids)
+                      print(f"{len(image_ids)}枚をDrive保存、D:FへIDを書き込みました")
+
+                  except Exception as e:
+                      print(f"行 {row_number} の処理エラー: {e}")
+                      continue
+
+          if __name__ == "__main__":
+              main()
           PY
 
-          python jan_image_search.py
-
-      - name: Show downloaded image
-        run: |
-          echo "===== RESULT ====="
-          cat output/result.txt
-          echo ""
-          echo "===== FILE ====="
-          ls -lh output/
-
-      - name: Upload product image
-        uses: actions/upload-artifact@v4
-        with:
-          name: jan-product-image-${{ inputs.jan }}
-          path: output/
+      - name: Process JANs
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: python jan_image_search.py
