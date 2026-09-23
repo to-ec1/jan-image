@@ -30,8 +30,8 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-          SPREADSHEET_ID: "10FjKOIikwAGecJYUvNiJQuk_5FmpUoCRim-bKnZrbpI"
-          DRIVE_FOLDER_ID: "1A1Rd04CAw07I4G14fnjsXQjS9KXw8heb"
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
         run: |
           cat > main.py <<'PY'
           import os
