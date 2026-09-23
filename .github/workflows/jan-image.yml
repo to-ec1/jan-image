@@ -27,7 +27,8 @@ jobs:
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          PYTHONUNBUFFERED: "1"
         run: |
           echo "start"
           python --version
-          python main.py
+          python -u main.py
